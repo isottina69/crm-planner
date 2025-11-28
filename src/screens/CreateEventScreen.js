@@ -14,12 +14,7 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Picker } from '@react-native-picker/picker';
-import {
-  createEvent,
-  listOwners,
-  updateEvent,
-  deleteEvent,
-} from '../api/mobileClient';
+import * as api from '../api/mobileClient';
 
 const TIPI_VISITA = [
   'Visita di controllo',
@@ -46,30 +41,35 @@ function formatDateForDisplay(dateObj) {
  * Mostra l’orario in formato HH:MM
  */
 function formatTimeForDisplay(dateObj) {
-  return dateObj.toLocaleTimeString('it-IT', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const hh = dateObj.getHours().toString().padStart(2, '0');
+  const mm = dateObj.getMinutes().toString().padStart(2, '0');
+  return `${hh}:${mm}`;
 }
 
 /**
- * YYYY-MM-DD da Date (usa UTC ma per le nostre ore va benissimo)
+ * Ritorna stringa data in formato "YYYY-MM-DD" (UTC)
  */
 function toDateString(dateObj) {
-  return dateObj.toISOString().slice(0, 10);
+  const year = dateObj.getUTCFullYear();
+  const month = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 /**
- * Converte un Date (in locale) in orario "di DB" (UTC) HH:MM
+ * Ritorna orario in formato "HH:MM" (UTC)
  */
 function toTimeString(dateObj) {
-  const h = String(dateObj.getUTCHours()).padStart(2, '0');
-  const m = String(dateObj.getUTCMinutes()).padStart(2, '0');
-  return `${h}:${m}`;
+  const hh = String(dateObj.getUTCHours()).padStart(2, '0');
+  const mm = String(dateObj.getUTCMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
 }
 
 /**
- * Converte coppia (date_start, time_start) dal server (UTC) in Date locale
+ * Converte data + orario del CRM (in UTC) a oggetto Date locale
+ *
+ * @param {string} dateStr  - es: "2025-11-28"
+ * @param {string} timeStr  - es: "09:30:00"
  */
 function parseUtcToLocal(dateStr, timeStr) {
   if (!dateStr || !timeStr) return null;
@@ -101,20 +101,26 @@ export default function CreateEventScreen({ route, navigation }) {
     route?.params?.selectedContact || null
   );
 
+  // Se siamo in edit e non c'è selectedContact nei param,
+  // proviamo a leggerlo dai campi dell'evento se disponibili
   useEffect(() => {
-    const contact = route?.params?.selectedContact;
-    if (contact) {
-      setSelectedContact(contact);
-      const name =
-        contact.fullname ||
-        `${contact.firstname || ''} ${contact.lastname || ''}`.trim();
-      if (name) {
-        setSubject(name);
+    if (mode === 'edit' && editingEvent && !selectedContact) {
+      if (editingEvent.contact) {
+        setSelectedContact({
+          id: editingEvent.contact.id,
+          name: editingEvent.contact.name,
+          phone: editingEvent.contact.phone,
+        });
+      } else if (editingEvent.contact_id || editingEvent.contactname) {
+        setSelectedContact({
+          id: editingEvent.contact_id || null,
+          name: editingEvent.contactname || '',
+          phone: editingEvent.contactphone || '',
+        });
       }
     }
-  }, [route?.params?.selectedContact]);
+  }, [mode, editingEvent, selectedContact]);
 
-  // =========================
   // DATA/ORA INIZIO (UTC → locale)
   // =========================
   const initialStartDateTime = (() => {
@@ -126,18 +132,38 @@ export default function CreateEventScreen({ route, navigation }) {
       if (d) return d;
     }
 
+    // fallback: se viene passato date_start senza orario
     if (editingEvent?.start) {
       const [datePart, timePart] = editingEvent.start.split(' ');
       const d = parseUtcToLocal(datePart, timePart || '00:00:00');
       if (d) return d;
     }
 
-    return new Date(defaultDateString + 'T09:00:00');
+    // nuovo evento:
+    // - data = quella selezionata sul calendario
+    // - ora = ora corrente arrotondata al quarto d'ora successivo
+    const now = new Date();
+    const roundedMinutes = Math.ceil(now.getMinutes() / 15) * 15;
+    now.setMinutes(roundedMinutes, 0, 0);
+
+    const [y, m, d] = defaultDateString.split('-').map((n) => parseInt(n, 10));
+    const local = new Date(y, m - 1, d, now.getHours(), now.getMinutes(), 0);
+
+    // convertiamo in UTC per coerenza con toDateString/toTimeString
+    const utc = new Date(
+      Date.UTC(
+        local.getFullYear(),
+        local.getMonth(),
+        local.getDate(),
+        local.getHours(),
+        local.getMinutes(),
+        0
+      )
+    );
+
+    return utc;
   })();
 
-  const [startDateTime, setStartDateTime] = useState(initialStartDateTime);
-
-  // =========================
   // DATA/ORA FINE (UTC → locale)
   // =========================
   const initialEndDateTime = (() => {
@@ -155,19 +181,23 @@ export default function CreateEventScreen({ route, navigation }) {
       if (d) return d;
     }
 
-    return new Date(initialStartDateTime.getTime() + 30 * 60 * 1000);
+    // se nuovo evento, default = orario inizio + 30 minuti
+    const start = initialStartDateTime;
+    const end = new Date(start.getTime() + 30 * 60000);
+    return end;
   })();
 
+  const [startDateTime, setStartDateTime] = useState(initialStartDateTime);
   const [endDateTime, setEndDateTime] = useState(initialEndDateTime);
 
-  // TIPO VISITA (eventstatus)
+  // tipo visita
   const [tipoVisita, setTipoVisita] = useState(() => {
-    const evStatus = editingEvent?.tipologia_visita || editingEvent?.eventstatus;
+    const evStatus = editingEvent?.eventstatus;
     if (evStatus && TIPI_VISITA.includes(evStatus)) return evStatus;
     return TIPI_VISITA[0];
   });
 
-  // TIPO ATTIVITÀ (activitytype)
+  // tipo attività
   const [tipoAttivita, setTipoAttivita] = useState(() => {
     const actType = editingEvent?.activitytype;
     if (actType && TIPI_ATTIVITA.includes(actType)) return actType;
@@ -181,7 +211,7 @@ export default function CreateEventScreen({ route, navigation }) {
 
   const [saving, setSaving] = useState(false);
 
-    // carica lista "Assegnato a"
+  // carica lista "Assegnato a"
   useEffect(() => {
     let isMounted = true;
 
@@ -189,14 +219,18 @@ export default function CreateEventScreen({ route, navigation }) {
       try {
         setLoadingOwners(true);
 
-        const listRaw = await listOwners(); // [{id, name, type}, ...]
+        const listRaw = api.listOwners
+          ? await api.listOwners() // [{id, name, type}, ...]
+          : api.fetchOwners
+          ? await api.fetchOwners()
+          : [];
         if (!isMounted) return;
 
         // normalizzo gli id a stringa
         const list = (listRaw || []).map((o) => ({
           ...o,
           id: String(o.id),
-          name: o.name || o.label || "Senza nome",
+          name: o.name || o.label || 'Senza nome',
         }));
 
         setOwners(list);
@@ -208,9 +242,9 @@ export default function CreateEventScreen({ route, navigation }) {
           editingEvent?.assigned_user_id ?? editingEvent?.owner_id;
 
         if (rawAssigned != null) {
-          if (typeof rawAssigned === "string" && rawAssigned.includes("x")) {
+          if (typeof rawAssigned === 'string' && rawAssigned.includes('x')) {
             // es: "19x7" → "7"
-            const parts = rawAssigned.split("x");
+            const parts = rawAssigned.split('x');
             selectedId = parts[1] || null;
           } else {
             selectedId = String(rawAssigned);
@@ -224,17 +258,17 @@ export default function CreateEventScreen({ route, navigation }) {
         // default: "TFM SAN SALVO" oppure primo owner
         if (!selectedId && list.length > 0) {
           const tfm = list.find((o) =>
-            (o.name || "")
+            (o.name || '')
               .toString()
               .toUpperCase()
-              .includes("TFM SAN SALVO")
+              .includes('TFM SAN SALVO')
           );
           selectedId = tfm ? tfm.id : list[0].id;
         }
 
         setAssignedUserId(selectedId || null);
       } catch (e) {
-        console.warn("Errore loadOwners", e);
+        console.warn('Errore loadOwners', e);
       } finally {
         if (isMounted) {
           setLoadingOwners(false);
@@ -249,7 +283,6 @@ export default function CreateEventScreen({ route, navigation }) {
     };
   }, [editingEvent]);
 
-
   // visibilità picker
   const [showStartDatePicker, setShowStartDatePicker] = useState(false);
   const [showStartTimePicker, setShowStartTimePicker] = useState(false);
@@ -257,52 +290,43 @@ export default function CreateEventScreen({ route, navigation }) {
 
   const onChangeStartDate = (event, selectedDate) => {
     setShowStartDatePicker(false);
-    if (selectedDate) {
+    if (event.type === 'set' && selectedDate) {
       const updated = new Date(startDateTime);
-      updated.setFullYear(
+      updated.setUTCFullYear(
         selectedDate.getFullYear(),
         selectedDate.getMonth(),
         selectedDate.getDate()
       );
       setStartDateTime(updated);
 
-      const updatedEnd = new Date(endDateTime);
-      updatedEnd.setFullYear(
-        selectedDate.getFullYear(),
-        selectedDate.getMonth(),
-        selectedDate.getDate()
-      );
-      setEndDateTime(updatedEnd);
+      // se la fine è prima dell'inizio, sposto anche la fine
+      if (endDateTime < updated) {
+        const endUpdated = new Date(updated.getTime() + 30 * 60000);
+        setEndDateTime(endUpdated);
+      }
     }
   };
 
-  const onChangeStartTime = (event, selectedDate) => {
+  const onChangeStartTime = (event, selectedTime) => {
     setShowStartTimePicker(false);
-    if (selectedDate) {
+    if (event.type === 'set' && selectedTime) {
       const updated = new Date(startDateTime);
-      updated.setHours(
-        selectedDate.getHours(),
-        selectedDate.getMinutes(),
-        0,
-        0
-      );
+      updated.setUTCHours(selectedTime.getHours(), selectedTime.getMinutes(), 0);
       setStartDateTime(updated);
 
-      const updatedEnd = new Date(updated.getTime() + 30 * 60 * 1000);
-      setEndDateTime(updatedEnd);
+      // se la fine è prima dell'inizio, sposto anche la fine
+      if (endDateTime < updated) {
+        const endUpdated = new Date(updated.getTime() + 30 * 60000);
+        setEndDateTime(endUpdated);
+      }
     }
   };
 
-  const onChangeEndTime = (event, selectedDate) => {
+  const onChangeEndTime = (event, selectedTime) => {
     setShowEndTimePicker(false);
-    if (selectedDate) {
+    if (event.type === 'set' && selectedTime) {
       const updated = new Date(endDateTime);
-      updated.setHours(
-        selectedDate.getHours(),
-        selectedDate.getMinutes(),
-        0,
-        0
-      );
+      updated.setUTCHours(selectedTime.getHours(), selectedTime.getMinutes(), 0);
       setEndDateTime(updated);
     }
   };
@@ -322,18 +346,18 @@ export default function CreateEventScreen({ route, navigation }) {
     }
 
     const basePayload = {
-  subject,
-  date: toDateString(startDateTime),
-  start_time: toTimeString(startDateTime), // UTC
-  end_time: toTimeString(endDateTime),     // UTC
-  activitytype: tipoAttivita,
-  eventstatus: tipoVisita,
-  assigned_user_id: assignedUserId,
-  owner_id: assignedUserId,                // per sicurezza lato PHP
+      subject,
+      date: toDateString(startDateTime),
+      start_time: toTimeString(startDateTime), // UTC
+      end_time: toTimeString(endDateTime), // UTC
+      activitytype: tipoAttivita,
+      eventstatus: tipoVisita,
+      assigned_user_id: assignedUserId,
+      owner_id: assignedUserId, // per sicurezza lato PHP
 
-  // 👉 nuovo campo: ID del contatto scelto nell'app
-  contact_id: selectedContact?.id || null,
-};
+      // 👉 nuovo campo: ID del contatto scelto nell'app
+      contact_id: selectedContact?.id || null,
+    };
 
     try {
       setSaving(true);
@@ -348,7 +372,7 @@ export default function CreateEventScreen({ route, navigation }) {
           throw new Error('ID evento mancante per la modifica.');
         }
 
-        const updated = await updateEvent({
+        const updated = await api.updateEvent({
           ...basePayload,
           activityid: activityId,
         });
@@ -361,7 +385,7 @@ export default function CreateEventScreen({ route, navigation }) {
           },
         ]);
       } else {
-        const created = await createEvent(basePayload);
+        const created = await api.createEvent(basePayload);
         console.log('Creato evento:', created);
 
         Alert.alert('Ok', 'Appuntamento creato con successo.', [
@@ -390,132 +414,158 @@ export default function CreateEventScreen({ route, navigation }) {
       return;
     }
 
-    Alert.alert(
-      'Conferma',
-      'Vuoi davvero eliminare questo appuntamento?',
-      [
-        { text: 'Annulla', style: 'cancel' },
-        {
-          text: 'Elimina',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              setSaving(true);
-              const res = await deleteEvent(activityId);
-              console.log('Evento eliminato:', res);
+    Alert.alert('Conferma', 'Vuoi davvero eliminare questo appuntamento?', [
+      { text: 'Annulla', style: 'cancel' },
+      {
+        text: 'Elimina',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setSaving(true);
+            const res = await api.deleteEvent(activityId);
+            console.log('Evento eliminato:', res);
 
-              Alert.alert('Ok', 'Appuntamento eliminato.', [
-                {
-                  text: 'OK',
-                  onPress: () => navigation.goBack(),
-                },
-              ]);
-            } catch (e) {
-              console.error('Errore cancellazione evento:', e);
-              Alert.alert(
-                'Errore',
-                e.message || 'Errore durante la cancellazione.'
-              );
-            } finally {
-              setSaving(false);
-            }
-          },
+            Alert.alert('Ok', 'Appuntamento eliminato.', [
+              {
+                text: 'OK',
+                onPress: () => navigation.goBack(),
+              },
+            ]);
+          } catch (e) {
+            console.error('Errore cancellazione evento:', e);
+            Alert.alert(
+              'Errore',
+              e.message || 'Errore durante l\'eliminazione.'
+            );
+          } finally {
+            setSaving(false);
+          }
         },
-      ]
-    );
+      },
+    ]);
   };
 
-  const selectedContactName =
-    selectedContact &&
-    (
-      selectedContact.fullname ||
-      `${selectedContact.firstname || ''} ${
-        selectedContact.lastname || ''
-      }`
-    ).trim();
+  const openSelectContact = () => {
+    navigation.navigate('SelectContact', {
+      onSelect: (contact) => {
+        setSelectedContact(contact || null);
+      },
+    });
+  };
+
+  const currentDateLabel = formatDateForDisplay(
+    new Date(
+      startDateTime.getUTCFullYear(),
+      startDateTime.getUTCMonth(),
+      startDateTime.getUTCDate()
+    )
+  );
 
   return (
     <KeyboardAvoidingView
-      style={{ flex: 1 }}
+      style={{ flex: 1, backgroundColor: '#f3f4f6' }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={{ padding: 16, paddingBottom: 96 }}
-        keyboardShouldPersistTaps="handled"
-      >
+      <ScrollView contentContainerStyle={styles.container}>
+        {/* HEADER */}
+        <View style={styles.headerRow}>
+          <Text style={styles.title}>
+            {mode === 'edit' ? 'Modifica appuntamento' : 'Nuovo appuntamento'}
+          </Text>
+          <Text style={styles.dateLabel}>{currentDateLabel}</Text>
+        </View>
+
         {/* OGGETTO */}
-        <Text style={styles.label}>
-          {mode === 'edit' ? 'Modifica appuntamento' : 'Nuovo appuntamento'}
-        </Text>
+        <Text style={styles.label}>Oggetto</Text>
         <TextInput
           style={styles.input}
+          placeholder="Nome del paziente"
           value={subject}
           onChangeText={setSubject}
-          placeholder="Es. Visita di controllo"
         />
 
-        {/* CONTATTO */}
-        <Text style={[styles.subLabel, { marginTop: 12 }]}>Contatto</Text>
-        <TouchableOpacity
-          style={[styles.input, styles.inputButton, styles.contactButton]}
-          onPress={() => navigation.navigate('SelectContact')}
-        >
-          <Text style={styles.contactText}>
-            {selectedContactName || 'Seleziona contatto'}
-          </Text>
-          <Text style={styles.contactAction}>Cerca</Text>
-        </TouchableOpacity>
-
-        {/* DATA */}
-        <Text style={[styles.subLabel, { marginTop: 16 }]}>Data</Text>
-        <View style={styles.row}>
-          <TouchableOpacity
-            style={[styles.input, styles.inputButton]}
-            onPress={() => setShowStartDatePicker(true)}
-          >
-            <Text>{formatDateForDisplay(startDateTime)}</Text>
+        {/* CONTATTO COLLEGATO */}
+        <View style={styles.contactRow}>
+          <View>
+            <Text style={styles.subLabel}>Contatto collegato</Text>
+            {selectedContact ? (
+              <Text style={styles.contactText}>
+                {selectedContact.name}
+                {selectedContact.phone ? ` (${selectedContact.phone})` : ''}
+              </Text>
+            ) : (
+              <Text style={[styles.contactText, { color: '#6b7280' }]}>
+                Nessun contatto selezionato
+              </Text>
+            )}
+          </View>
+          <TouchableOpacity onPress={openSelectContact}>
+            <Text style={styles.contactAction}>
+              {selectedContact ? 'Cambia' : 'Seleziona'}
+            </Text>
           </TouchableOpacity>
         </View>
 
-        {/* ORARI */}
-        <Text style={[styles.subLabel, { marginTop: 12 }]}>Orario</Text>
-        <View style={styles.row}>
-          <TouchableOpacity
-            style={[styles.input, styles.inputButton, { flex: 1, marginRight: 8 }]}
-            onPress={() => setShowStartTimePicker(true)}
-          >
-            <Text>{formatTimeForDisplay(startDateTime)}</Text>
-          </TouchableOpacity>
+        {/* DATA INIZIO */}
+        <Text style={[styles.subLabel, { marginTop: 16 }]}>Data</Text>
+        <TouchableOpacity
+          style={styles.input}
+          onPress={() => setShowStartDatePicker(true)}
+        >
+          <Text>{formatDateForDisplay(
+            new Date(
+              startDateTime.getUTCFullYear(),
+              startDateTime.getUTCMonth(),
+              startDateTime.getUTCDate()
+            )
+          )}</Text>
+        </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.input, styles.inputButton, { flex: 1, marginLeft: 8 }]}
-            onPress={() => setShowEndTimePicker(true)}
-          >
-            <Text>{formatTimeForDisplay(endDateTime)}</Text>
-          </TouchableOpacity>
+        {/* ORA INIZIO / FINE */}
+        <View style={{ flexDirection: 'row', marginTop: 12 }}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.subLabel}>Ora inizio</Text>
+            <TouchableOpacity
+              style={[styles.input, styles.inputButton]}
+              onPress={() => setShowStartTimePicker(true)}
+            >
+              <Text>{formatTimeForDisplay(startDateTime)}</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={{ width: 12 }} />
+
+          <View style={{ flex: 1 }}>
+            <Text style={styles.subLabel}>Ora fine</Text>
+            <TouchableOpacity
+              style={[styles.input, styles.inputButton, { flex: 1, marginLeft: 8 }]}
+              onPress={() => setShowEndTimePicker(true)}
+            >
+              <Text>{formatTimeForDisplay(endDateTime)}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* ASSEGNATO A */}
         <Text style={[styles.subLabel, { marginTop: 16 }]}>Assegnato a</Text>
         <View style={styles.pickerWrapper}>
-  {loadingOwners ? (
-    <ActivityIndicator />
-  ) : (
-    <Picker
-      selectedValue={assignedUserId || ""}
-      onValueChange={(val) => setAssignedUserId(val)}
-    >
-      {owners.map((u) => (
-        <Picker.Item
-          label={u.name}
-          value={u.id}
-          key={`${u.type || "user"}-${u.id}`}
-        />
-      ))}
-    </Picker>
-  )}
-</View>
+          {loadingOwners ? (
+            <ActivityIndicator />
+          ) : (
+            <Picker
+              selectedValue={assignedUserId || ''}
+              onValueChange={(val) => setAssignedUserId(val)}
+            >
+              {owners.map((u) => (
+                <Picker.Item
+                  label={u.name}
+                  value={u.id}
+                  key={`${u.type || 'user'}-${u.id}`}
+                />
+              ))}
+            </Picker>
+          )}
+        </View>
 
         {/* TIPO VISITA */}
         <Text style={[styles.subLabel, { marginTop: 12 }]}>Tipo visita</Text>
@@ -543,58 +593,79 @@ export default function CreateEventScreen({ route, navigation }) {
           </Picker>
         </View>
 
-        {/* SALVA */}
-<TouchableOpacity
-  style={[styles.button, saving && { opacity: 0.6 }, { marginTop: 20 }]}
-  onPress={onSave}
-  disabled={saving}
->
-  <Text style={styles.buttonText}>
-    {saving
-      ? 'Salvataggio...'
-      : mode === 'edit'
-      ? 'Salva modifiche'
-      : 'Salva appuntamento'}
-  </Text>
-</TouchableOpacity>
+        {/* PULSANTI */}
+        <View style={styles.buttonsRow}>
+          {mode === 'edit' && (
+            <TouchableOpacity
+              style={[styles.button, styles.deleteButton]}
+              onPress={onDelete}
+              disabled={saving}
+            >
+              <Text style={styles.buttonText}>Elimina</Text>
+            </TouchableOpacity>
+          )}
 
-{/* ELIMINA (sotto il Salva) */}
-{mode === 'edit' && editingEvent && (
-  <TouchableOpacity
-    style={[styles.deleteButton, saving && { opacity: 0.6 }, { marginTop: 12 }]}
-    onPress={onDelete}
-    disabled={saving}
-  >
-    <Text style={styles.deleteButtonText}>Elimina appuntamento</Text>
-  </TouchableOpacity>
-)}
+          <View style={{ flex: 1 }} />
 
-        {/* PICKER NATIVI */}
+          <TouchableOpacity
+            style={[styles.button, styles.saveButton]}
+            onPress={onSave}
+            disabled={saving}
+          >
+            <Text style={styles.buttonText}>
+              {saving
+                ? 'Salvataggio...'
+                : mode === 'edit'
+                ? 'Salva modifiche'
+                : 'Crea appuntamento'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* PICKER NATIVE (IOS/ANDROID) */}
         {showStartDatePicker && (
           <DateTimePicker
-            value={startDateTime}
+            value={new Date(
+              startDateTime.getUTCFullYear(),
+              startDateTime.getUTCMonth(),
+              startDateTime.getUTCDate()
+            )}
             mode="date"
-            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+            display="default"
             onChange={onChangeStartDate}
           />
         )}
 
         {showStartTimePicker && (
           <DateTimePicker
-            value={startDateTime}
+            value={new Date(
+              1970,
+              0,
+              1,
+              startDateTime.getUTCHours(),
+              startDateTime.getUTCMinutes(),
+              0
+            )}
             mode="time"
             is24Hour
-            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+            display="default"
             onChange={onChangeStartTime}
           />
         )}
 
         {showEndTimePicker && (
           <DateTimePicker
-            value={endDateTime}
+            value={new Date(
+              1970,
+              0,
+              1,
+              endDateTime.getUTCHours(),
+              endDateTime.getUTCMinutes(),
+              0
+            )}
             mode="time"
             is24Hour
-            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+            display="default"
             onChange={onChangeEndTime}
           />
         )}
@@ -604,61 +675,81 @@ export default function CreateEventScreen({ route, navigation }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
-  label: {
-    fontSize: 18,
+  container: {
+    padding: 16,
+    paddingBottom: 32,
+  },
+  headerRow: {
+    marginBottom: 16,
+  },
+  title: {
+    fontSize: 20,
     fontWeight: '700',
     color: '#111827',
-    marginBottom: 10,
   },
-  subLabel: {
+  dateLabel: {
+    marginTop: 4,
+    fontSize: 14,
+    color: '#6b7280',
+  },
+  label: {
     fontSize: 14,
     fontWeight: '600',
     color: '#111827',
-    marginBottom: 6,
+    marginBottom: 4,
+  },
+  subLabel: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#374151',
+    marginBottom: 4,
   },
   input: {
-    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#d1d5db',
     borderRadius: 8,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
+    paddingVertical: 10,
+    fontSize: 15,
+    backgroundColor: '#ffffff',
   },
   inputButton: {
     justifyContent: 'center',
   },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
   pickerWrapper: {
-    marginTop: 4,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
-    overflow: 'hidden',
+    borderColor: '#d1d5db',
+    borderRadius: 8,
+    backgroundColor: '#ffffff',
+  },
+  buttonsRow: {
+    flexDirection: 'row',
+    marginTop: 24,
+    alignItems: 'center',
   },
   button: {
-    backgroundColor: '#4f46e5',
     paddingVertical: 12,
+    paddingHorizontal: 16,
     borderRadius: 999,
+    minWidth: 140,
     alignItems: 'center',
   },
-  buttonText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+  saveButton: {
+    backgroundColor: '#4f46e5',
+  },
   deleteButton: {
-    backgroundColor: '#DC2626',
-    paddingVertical: 10,
-    borderRadius: 999,
-    alignItems: 'center',
+    backgroundColor: '#ef4444',
   },
-  deleteButtonText: {
-    color: '#fff',
-    fontWeight: '600',
+  buttonText: {
+    color: '#ffffff',
     fontSize: 14,
+    fontWeight: '600',
   },
-  contactButton: {
+  contactRow: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: '#e5e7eb',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',

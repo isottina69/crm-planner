@@ -12,88 +12,137 @@ import {
 import { useFocusEffect } from "@react-navigation/native";
 import { fetchContacts } from "../api/mobileClient";
 
-export default function SelectContactScreen({ navigation }) {
+export default function SelectContactScreen({ route, navigation }) {
   const [contacts, setContacts] = useState([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const loadContacts = async (searchText = "") => {
-    try {
-      setLoading(true);
-      const data = await fetchContacts(searchText);
-      setContacts(data || []);
-    } catch (err) {
-      console.log("Errore fetchContacts:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // callback passato da CreateEventScreen
+  const onSelect = route?.params?.onSelect || null;
+
+  const loadContacts = useCallback(
+    async (term = "") => {
+      try {
+        setLoading(true);
+        const data = await fetchContacts(term);
+        setContacts(data || []);
+      } catch (e) {
+        console.log("Errore fetchContacts:", e);
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
 
   useFocusEffect(
     useCallback(() => {
-      loadContacts();
-    }, [])
+      // carica i contatti iniziali
+      loadContacts("");
+    }, [loadContacts])
   );
 
-  const onChangeSearch = (text) => {
-    setSearch(text);
-    loadContacts(text);
+  const handleSearch = () => {
+    loadContacts(search);
   };
 
-  const onSelectContact = (contact) => {
-    // Torna alla schermata di creazione evento passando il contatto selezionato
-    navigation.navigate("CreateEvent", { selectedContact: contact });
+  const handlePressContact = (item) => {
+    // 👉 manda il contatto alla schermata precedente
+    if (onSelect) {
+      onSelect({
+        id: item.id,
+        name: `${item.firstname || ""} ${item.lastname || ""}`.trim(),
+        phone: item.phone || item.mobile || "",
+      });
+    }
+    // 👉 torna indietro, NON apre una nuova CreateEvent
+    navigation.goBack();
   };
 
-  const renderItem = ({ item }) => {
-    const name = item.fullname || `${item.firstname || ""} ${item.lastname || ""}`.trim();
-    return (
-      <TouchableOpacity style={styles.item} onPress={() => onSelectContact(item)}>
-        <Text style={styles.itemName}>{name || "Senza nome"}</Text>
-        {item.mobile ? <Text style={styles.itemInfo}>{item.mobile}</Text> : null}
-        {item.email ? <Text style={styles.itemInfo}>{item.email}</Text> : null}
-      </TouchableOpacity>
-    );
-  };
+  const renderItem = ({ item }) => (
+    <TouchableOpacity
+      style={styles.item}
+      onPress={() => handlePressContact(item)}
+    >
+      <Text style={styles.itemName}>
+        {item.firstname} {item.lastname}
+      </Text>
+      {!!(item.phone || item.mobile) && (
+        <Text style={styles.itemInfo}>{item.phone || item.mobile}</Text>
+      )}
+      {!!item.email && <Text style={styles.itemInfo}>{item.email}</Text>}
+    </TouchableOpacity>
+  );
 
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Seleziona contatto</Text>
 
-      <TextInput
-        style={styles.search}
-        placeholder="Cerca contatto..."
-        value={search}
-        onChangeText={onChangeSearch}
-      />
+      <View style={styles.searchRow}>
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Cerca per nome..."
+          value={search}
+          onChangeText={setSearch}
+          returnKeyType="search"
+          onSubmitEditing={handleSearch}
+        />
+        <TouchableOpacity style={styles.searchButton} onPress={handleSearch}>
+          <Text style={styles.searchButtonText}>Cerca</Text>
+        </TouchableOpacity>
+      </View>
 
-      {loading ? <ActivityIndicator style={{ marginTop: 10 }} /> : null}
-
-      <FlatList
-        data={contacts}
-        keyExtractor={(item) => String(item.id)}
-        renderItem={renderItem}
-        ListEmptyComponent={
-          !loading ? (
-            <Text style={styles.empty}>Nessun contatto trovato</Text>
-          ) : null
-        }
-      />
+      {loading ? (
+        <ActivityIndicator style={{ marginTop: 20 }} />
+      ) : contacts.length === 0 ? (
+        <Text style={styles.empty}>Nessun contatto trovato</Text>
+      ) : (
+        <FlatList
+          data={contacts}
+          keyExtractor={(item, index) => String(item.id || index)}
+          renderItem={renderItem}
+          contentContainerStyle={{ paddingBottom: 20 }}
+        />
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f7f7f7", padding: 10 },
-  title: { fontSize: 20, fontWeight: "700", marginBottom: 10 },
-  search: {
-    backgroundColor: "#fff",
+  container: {
+    flex: 1,
+    padding: 16,
+    backgroundColor: "#f3f4f6",
+  },
+  title: {
+    fontSize: 20,
+    fontWeight: "700",
+    marginBottom: 16,
+    color: "#111827",
+  },
+  searchRow: {
+    flexDirection: "row",
+    marginBottom: 12,
+  },
+  searchInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "#d1d5db",
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "#ddd",
+    backgroundColor: "#ffffff",
+  },
+  searchButton: {
+    marginLeft: 8,
+    backgroundColor: "#4f46e5",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    justifyContent: "center",
+  },
+  searchButtonText: {
+    color: "#ffffff",
+    fontWeight: "600",
   },
   item: {
     backgroundColor: "#fff",
