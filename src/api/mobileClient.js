@@ -112,31 +112,50 @@ export async function createEvent(eventData) {
 
 /**
  * Aggiorna un evento esistente.
- * @param {number|string} id
- * @param {object} eventData
+ * @param {object} payload - deve contenere almeno activityid, date, start_time, end_time, ...
+ *  Esempio:
+ *  {
+ *    activityid: "1766",
+ *    subject: "...",
+ *    date: "2025-11-29",
+ *    start_time: "18:30",
+ *    end_time: "19:00",
+ *    activitytype: "TFM",
+ *    eventstatus: "Prima visita",
+ *    assigned_user_id: "7",
+ *    owner_id: "7",
+ *    contact_id: "1535"
+ *  }
  */
-export async function updateEvent(id, eventData) {
+export async function updateEvent(payload) {
   ensureConfig();
 
-  if (!id) {
-    throw new Error("ID evento mancante in updateEvent");
+  if (!payload || !payload.activityid) {
+    throw new Error("ID evento (activityid) mancante in updateEvent");
   }
 
-  const url = `${BASE_URL}/mobile/events/${id}?api_key=${API_KEY}`;
+  const url = `${BASE_URL}/mobile/events/?api_key=${API_KEY}`;
   console.log("updateEvent URL:", url);
-  console.log("updateEvent payload:", eventData);
+
+  const body = {
+    ...payload,
+    action: "update",
+  };
+
+  console.log("updateEvent payload:", body);
 
   const res = await fetch(url, {
-    method: "PUT",
+    method: "POST",
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(eventData),
+    body: JSON.stringify(body),
   });
 
   return await handleJsonResponse(res, "Errore aggiornamento evento");
 }
+
 
 /**
  * Elimina un evento.
@@ -148,18 +167,29 @@ export async function deleteEvent(id) {
     throw new Error("ID evento mancante in deleteEvent");
   }
 
-  const url = `${BASE_URL}/mobile/events/${id}?api_key=${API_KEY}`;
+  // Anche qui: POST su /mobile/events/ con action = delete
+  const url = `${BASE_URL}/mobile/events/?api_key=${API_KEY}`;
   console.log("deleteEvent URL:", url);
 
+  const payload = {
+    activityid: id,
+    action: "delete",
+  };
+
+  console.log("deleteEvent payload:", payload);
+
   const res = await fetch(url, {
-    method: "DELETE",
+    method: "POST",
     headers: {
       Accept: "application/json",
+      "Content-Type": "application/json",
     },
+    body: JSON.stringify(payload),
   });
 
   return await handleJsonResponse(res, "Errore eliminazione evento");
 }
+
 
 // -----------------------------------------------------
 // OWNERS (ASSEGNATO A)
