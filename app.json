@@ -1,0 +1,30 @@
+{
+  "expo": {
+    "name": "CRM Dietista",
+    "slug": "crm-planner",
+    "owner": "isottina",
+    "android": {
+      "package": "com.isottina.crmplanner",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#FFFFFF"
+      }
+    },
+    "icon": "./assets/icon.png",
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "61135be8-d8c8-45e7-ba38-dc183a46cd8c"
+      }
+    }
+  }
+}
